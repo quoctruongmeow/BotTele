@@ -1,4 +1,4 @@
-app = "bottele-s0gg-q"   # đổi đúng tên app của bạn trên Fly
+app = "bottele-s0gg-q"   # đúng tên app của bạn trên Fly.io
 primary_region = "sin"
 
 [build]
