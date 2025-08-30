@@ -3,14 +3,13 @@ app = "bottele-s0gg-q"   # <--- đổi đúng tên app trên Fly
 primary_region = "sin"   # chọn region gần bạn: sin, hkg, nrt, bom, syd,...
 
 [build]
-  dockerfile = "Dockerfile"
-
-# Khai báo tiến trình worker (không expose port)
-[processes]
-  worker = "python tele_fb_monitor1.py"
+  builder = "paketobuildpacks/builder:base"
 
 [env]
   PYTHONUNBUFFERED = "1"
+
+[processes]
+  app = "python tele_fb_monitor1.py"
 
 # Không có [[services]] => không có HTTP/port/healthcheck
 # Nếu Fly đã sinh [[services]] trước đó, file này sẽ ghi đè và bỏ hết.
