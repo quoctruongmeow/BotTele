@@ -3,16 +3,17 @@
 
 import os
 import re
+import json
 import time
 from datetime import datetime
 import requests
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# =============== ENV ===============
+# ================== ENV ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "<PUT_YOUR_BOT_TOKEN_HERE>"
 if not BOT_TOKEN or BOT_TOKEN.startswith("<PUT_"):
-    raise SystemExit("Thiếu BOT_TOKEN. Đặt biến môi trường BOT_TOKEN hoặc sửa trực tiếp trong file.")
+    raise SystemExit("Thiếu BOT_TOKEN. Đặt ENV BOT_TOKEN hoặc sửa trực tiếp trong file.")
 
 ADMIN_IDS = {int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
 AUTH_USER_IDS = {int(x.strip()) for x in os.getenv("AUTH_USER_IDS", "").split(",") if x.strip().isdigit()}
@@ -21,13 +22,7 @@ print("DEBUG -> ADMIN_IDS loaded:", ADMIN_IDS)
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-def is_admin(uid: int) -> bool:
-    return uid in ADMIN_IDS
-
-def is_authorized(uid: int) -> bool:
-    return is_admin(uid) or (uid in AUTH_USER_IDS)
-
-# =============== THUẬT TOÁN CHECK (GIỮ NGUYÊN) ===============
+# ================== THUẬT TOÁN CHECK (GIỮ NGUYÊN) ==================
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120 Safari/537.36"
 def check_live(uid: str, timeout: float = 10.0) -> str:
     """
@@ -49,11 +44,53 @@ def check_live(uid: str, timeout: float = 10.0) -> str:
         pass
     return "error"
 
-# =============== STATE (RAM) ===============
+# ================== LƯU TRẠNG THÁI & THUÊ BAO ==================
+SUBS_FILE = "subs.json"  # { "123456": {"granted_at": 1700000000, "expire_at": 1702592000} }
+
+def load_subs() -> dict[int, dict]:
+    try:
+        with open(SUBS_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        # key có thể là str → ép int
+        return {int(k): v for k, v in raw.items()}
+    except Exception:
+        return {}
+
+def save_subs():
+    try:
+        with open(SUBS_FILE, "w", encoding="utf-8") as f:
+            json.dump({str(k): v for k, v in subs.items()}, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+subs: dict[int, dict] = load_subs()
+
+def now_ts() -> int:
+    return int(time.time())
+
+def is_active_subscription(uid: int) -> bool:
+    info = subs.get(uid)
+    if not info:
+        return False
+    return info.get("expire_at", 0) > now_ts()
+
+def is_admin(uid: int) -> bool:
+    return uid in ADMIN_IDS
+
+def is_authorized(uid: int) -> bool:
+    # Admin luôn pass
+    if is_admin(uid):
+        return True
+    # Người có lifetime qua AUTH_USER_IDS
+    if uid in AUTH_USER_IDS:
+        return True
+    # Người được duyệt có hạn
+    return is_active_subscription(uid)
+
+# ======= DATA THEO DÕI UID (RAM) =======
 # store_map: owner_id -> { uid -> {"name": str, "note": str, "following": bool, "added": ts, "kind": "profile"|"group"} }
 store_map: dict[int, dict[str, dict]] = {}
 wizard_state: dict[int, dict] = {}
-
 GREEN = "🟢"; RED = "🔴"
 
 def get_store(owner: int) -> dict:
@@ -73,7 +110,7 @@ def set_item(owner: int, uid: str, name: str = "", note: str = "", following: bo
             "name": name or "",
             "note": note or "",
             "following": True if following is None else following,
-            "added": int(time.time()),
+            "added": now_ts(),
             "kind": (kind or "profile"),
         }
 
@@ -88,16 +125,36 @@ def set_following(owner: int, uid: str, val: bool):
 
 def reset_wizard(uid: int): wizard_state.pop(uid, None)
 
-# =============== ACCESS DECORATOR ===============
+# ================== DECORATOR KIỂM TRA QUYỀN ==================
+MARKETING_TEXT = (
+    "⛔ <b>Bạn không có quyền sử dụng bot này!</b>\n"
+    "Để sử dụng bot, bạn cần có gói đăng ký còn hạn.\n"
+    "Hãy liên hệ Zalo admin <u>0354545004</u> hoặc <u>0326107821</u> để đăng ký.\n\n"
+    "💸 <b>BẢNG GIÁ DỊCH VỤ:</b>\n"
+    "• Chỉ <b>79.000đ/tháng</b>\n"
+    "• Cảnh báo UID LIVE/DIE tự động 24/7\n"
+    "• Hỗ trợ kỹ thuật, bảo mật, uy tín\n"
+    "• Đăng ký dùng thử miễn phí <b>3 ngày</b>!\n\n"
+    "🔥 <i>Đăng ký ngay để trải nghiệm tốt nhất!</i>"
+)
+
 def require_access(fn):
     def wrapper(message, *args, **kwargs):
-        if not is_authorized(message.from_user.id):
-            bot.reply_to(message, "⛔ Bạn chưa được cấp quyền sử dụng bot. Liên hệ admin để /grant.")
-            return
+        uid = message.from_user.id
+        if not is_authorized(uid):
+            return bot.reply_to(message, MARKETING_TEXT)
+        # Nếu là subs, show còn bao nhiêu ngày (nhẹ nhàng)
+        if not is_admin(uid) and uid not in AUTH_USER_IDS:
+            info = subs.get(uid)
+            if info:
+                left = max(0, info["expire_at"] - now_ts())
+                days_left = left // 86400
+                if days_left <= 3:  # sắp hết hạn thì nhắc
+                    bot.send_message(message.chat.id, f"⏳ Gói của bạn còn <b>{days_left} ngày</b>. Liên hệ admin để gia hạn.")
         return fn(message, *args, **kwargs)
     return wrapper
 
-# =============== UI HELPERS ===============
+# ================== UI HELPERS ==================
 def type_keyboard(uid: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -110,12 +167,12 @@ def _kind_label(kind: str) -> str:
     return "Group" if (kind or "profile") == "group" else "Profile/Page"
 
 def build_result_card(owner_id: int, uid: str):
-    info = get_store(owner_id).get(uid, {"name": "", "note": "", "following": True, "added": int(time.time()), "kind":"profile"})
+    info = get_store(owner_id).get(uid, {"name": "", "note": "", "following": True, "added": now_ts(), "kind":"profile"})
     name, note = info.get("name",""), info.get("note","")
     kind = info.get("kind","profile")
     status = check_live(uid)
     dot = GREEN if status == "live" else RED
-    now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    now_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     text = (
         "🆕 <b>Đã thêm UID mới!</b>\n"
         "────────────────────\n"
@@ -123,7 +180,7 @@ def build_result_card(owner_id: int, uid: str):
         f"📄 <b>Loại:</b> {_kind_label(kind)}\n"
         f"👤 <b>Tên:</b> {name or '-'}\n"
         f"📝 <b>Ghi chú:</b> {note or '-'}\n"
-        f"📅 <b>Ngày thêm:</b> {now}\n"
+        f"📅 <b>Ngày thêm:</b> {now_str}\n"
         f"📌 <b>Trạng thái hiện tại:</b> {dot} {status.upper()}"
     )
     kb = InlineKeyboardMarkup(row_width=2)
@@ -172,7 +229,7 @@ def extract_uid_from_link(link: str, timeout: float = 8.0) -> str | None:
             return None
     return None
 
-# =============== MENU/DEBUG ===============
+# ================== HELP & MENU ==================
 HELP_BULK = (
     "📘 <b>HƯỚNG DẪN THÊM UID HÀNG LOẠT:</b>\n\n"
     "⚠️ <b>LƯU Ý QUAN TRỌNG:</b>\n"
@@ -204,17 +261,29 @@ HELP_BULK = (
 
 @bot.message_handler(commands=["start","trogiup","menu"])
 def cmd_start(m):
-    admin_note = ("\n\n<i>Lệnh ADMIN:</i> /grant, /revoke, /who" if is_admin(m.from_user.id) else "")
+    admin_note = ("\n\n<i>Lệnh ADMIN:</i> /grant, /revoke, /who, /approve, /extend, /expire, /left" if is_admin(m.from_user.id) else "")
     bot.reply_to(m,
         "<b>Xin chào!</b>\n"
-        "Lệnh: /myid, /them, /themhg, /danhsach, /xoa, /dung, /tieptuc\n"
-        "Nếu bạn chưa được cấp quyền, gửi /myid cho admin để được /grant." + admin_note
+        "Lệnh: /myid, /status, /them, /themhg, /danhsach, /xoa, /huy\n"
+        "Nếu chưa được cấp quyền, gửi /myid cho admin để được duyệt /approve." + admin_note
     )
 
-# /myid LUÔN HOẠT ĐỘNG CHO MỌI NGƯỜI (KHÔNG CHECK QUYỀN)
+# /myid LUÔN HOẠT ĐỘNG CHO MỌI NGƯỜI
 @bot.message_handler(commands=["myid"])
 def cmd_myid(m):
     bot.reply_to(m, f"🆔 Your chat_id: <code>{m.from_user.id}</code>")
+
+@bot.message_handler(commands=["status"])
+def cmd_status(m):
+    uid = m.from_user.id
+    if is_admin(uid) or uid in AUTH_USER_IDS:
+        return bot.reply_to(m, "✅ Bạn đang có quyền sử dụng bot (không giới hạn thời gian).")
+    info = subs.get(uid)
+    if not info:
+        return bot.reply_to(m, "❌ Bạn chưa được duyệt. Liên hệ admin để đăng ký.")
+    left = max(0, info["expire_at"] - now_ts())
+    days = left // 86400
+    bot.reply_to(m, f"⏳ Gói của bạn còn <b>{days} ngày</b>.")
 
 @bot.message_handler(commands=["checkenv"])
 def cmd_checkenv(m):
@@ -227,7 +296,7 @@ def cmd_checkenv(m):
         f"AUTH_USER_IDS: <code>{getenv('AUTH_USER_IDS')}</code>"
     )
 
-# =============== ADMIN: /grant /revoke /who ===============
+# ================== ADMIN: QUYỀN & THUÊ BAO ==================
 def _resolve_target_id(message) -> int | None:
     parts = message.text.split()
     if len(parts) >= 2 and parts[1].isdigit():
@@ -244,9 +313,9 @@ def cmd_grant(m):
     if not target:
         return bot.reply_to(m, "Dùng: <code>/grant &lt;chat_id&gt;</code> hoặc reply vào tin nhắn của user rồi gõ /grant.")
     if target in ADMIN_IDS:
-        return bot.reply_to(m, "Người này đã là admin, mặc định có quyền.")
+        return bot.reply_to(m, "Người này đã là admin.")
     AUTH_USER_IDS.add(target)
-    bot.reply_to(m, f"✅ Đã cấp quyền cho user: <code>{target}</code>")
+    bot.reply_to(m, f"✅ Đã cấp quyền trọn đời cho user: <code>{target}</code>")
 
 @bot.message_handler(commands=["revoke"])
 def cmd_revoke(m):
@@ -255,11 +324,12 @@ def cmd_revoke(m):
     target = _resolve_target_id(m)
     if not target:
         return bot.reply_to(m, "Dùng: <code>/revoke &lt;chat_id&gt;</code> hoặc reply vào tin nhắn của user rồi gõ /revoke.")
+    removed = False
     if target in AUTH_USER_IDS:
-        AUTH_USER_IDS.remove(target)
-        bot.reply_to(m, f"🗑️ Đã thu hồi quyền của user: <code>{target}</code>")
-    else:
-        bot.reply_to(m, "User này chưa được cấp quyền hoặc đã bị thu hồi trước đó.")
+        AUTH_USER_IDS.remove(target); removed = True
+    if target in subs:
+        subs.pop(target, None); save_subs(); removed = True
+    bot.reply_to(m, "🗑️ Đã thu hồi quyền." if removed else "User này chưa có quyền.")
 
 @bot.message_handler(commands=["who"])
 def cmd_who(m):
@@ -267,9 +337,79 @@ def cmd_who(m):
         return bot.reply_to(m, "⛔ Chỉ admin mới dùng được /who.")
     admins = ", ".join(str(i) for i in sorted(ADMIN_IDS)) or "(trống)"
     users  = ", ".join(str(i) for i in sorted(AUTH_USER_IDS)) or "(trống)"
-    bot.reply_to(m, f"<b>Admins:</b> {admins}\n<b>Authorized users:</b> {users}")
+    # danh sách thuê bao (đang còn hạn)
+    active = [str(uid) for uid, inf in subs.items() if inf.get("expire_at",0) > now_ts()]
+    bot.reply_to(m, f"<b>Admins:</b> {admins}\n<b>Authorized (lifetime):</b> {users}\n<b>Subscribers active:</b> {', '.join(active) or '(trống)'}")
 
-# =============== USER COMMANDS ===============
+@bot.message_handler(commands=["approve"])
+def cmd_approve(m):
+    if not is_admin(m.from_user.id):
+        return bot.reply_to(m, "⛔ Chỉ admin mới dùng được /approve.")
+    parts = m.text.split()
+    if len(parts) < 2:
+        return bot.reply_to(m, "Cú pháp: <code>/approve &lt;chat_id&gt; [days=30]</code>")
+    try:
+        target = int(parts[1])
+        days = int(parts[2]) if len(parts) >= 3 else 30
+    except Exception:
+        return bot.reply_to(m, "Cú pháp: <code>/approve &lt;chat_id&gt; [days=30]</code>")
+    subs[target] = {"granted_at": now_ts(), "expire_at": now_ts() + days*86400}
+    save_subs()
+    bot.reply_to(m, f"✅ Đã duyệt <code>{target}</code> sử dụng bot <b>{days} ngày</b>!")
+
+@bot.message_handler(commands=["extend"])
+def cmd_extend(m):
+    if not is_admin(m.from_user.id):
+        return bot.reply_to(m, "⛔ Chỉ admin mới dùng được /extend.")
+    parts = m.text.split()
+    if len(parts) < 3:
+        return bot.reply_to(m, "Cú pháp: <code>/extend &lt;chat_id&gt; &lt;days&gt;</code>")
+    try:
+        target = int(parts[1]); days = int(parts[2])
+    except Exception:
+        return bot.reply_to(m, "Cú pháp: <code>/extend &lt;chat_id&gt; &lt;days&gt;</code>")
+    if target not in subs:
+        subs[target] = {"granted_at": now_ts(), "expire_at": now_ts()}
+    # nếu đã hết hạn, tính từ now; nếu còn hạn, cộng thêm
+    base = max(subs[target]["expire_at"], now_ts())
+    subs[target]["expire_at"] = base + days*86400
+    save_subs()
+    bot.reply_to(m, f"⏳ Đã gia hạn <b>{days} ngày</b> cho <code>{target}</code>.")
+
+@bot.message_handler(commands=["expire"])
+def cmd_expire(m):
+    if not is_admin(m.from_user.id):
+        return bot.reply_to(m, "⛔ Chỉ admin mới dùng được /expire.")
+    parts = m.text.split()
+    if len(parts) < 2:
+        return bot.reply_to(m, "Cú pháp: <code>/expire &lt;chat_id&gt;</code>")
+    try:
+        target = int(parts[1])
+    except Exception:
+        return bot.reply_to(m, "Cú pháp: <code>/expire &lt;chat_id&gt;</code>")
+    if target in subs:
+        subs[target]["expire_at"] = 0; save_subs()
+        return bot.reply_to(m, f"❌ Đã thu hồi quyền của <code>{target}</code>.")
+    bot.reply_to(m, "User chưa có gói thuê bao.")
+
+@bot.message_handler(commands=["left"])
+def cmd_left(m):
+    if not is_admin(m.from_user.id):
+        return bot.reply_to(m, "⛔ Chỉ admin mới dùng được /left.")
+    parts = m.text.split()
+    if len(parts) < 2:
+        return bot.reply_to(m, "Cú pháp: <code>/left &lt;chat_id&gt;</code>")
+    try:
+        target = int(parts[1])
+    except Exception:
+        return bot.reply_to(m, "Cú pháp: <code>/left &lt;chat_id&gt;</code>")
+    info = subs.get(target)
+    if not info:
+        return bot.reply_to(m, "User chưa được duyệt.")
+    left = max(0, info["expire_at"] - now_ts())
+    bot.reply_to(m, f"⏳ User <code>{target}</code> còn <b>{left//86400} ngày</b>.")
+
+# ================== USER COMMANDS ==================
 @bot.message_handler(commands=["danhsach"])
 @require_access
 def cmd_danhsach(m):
@@ -331,8 +471,7 @@ def cb_list(c):
     if c.data == "noopnav":
         return bot.answer_callback_query(c.id)
     _, owner_str, page_str = c.data.split(":")
-    owner = int(owner_str)
-    page = int(page_str)
+    owner = int(owner_str); page = int(page_str)
     if (c.from_user.id != owner) and (not is_admin(c.from_user.id)):
         return bot.answer_callback_query(c.id, "⛔ Không có quyền xem danh sách này.")
     send_list_page(c.message.chat.id, owner, page, edit_msg_id=c.message.message_id)
@@ -373,7 +512,6 @@ def step_uid(msg):
     if not re.fullmatch(r"\d{6,}", uid):
         bot.reply_to(msg, "UID không hợp lệ. Vui lòng nhập lại (hoặc /huy):")
         return bot.register_next_step_handler(msg, step_uid)
-    # default type = profile
     wizard_state[msg.from_user.id] = {"uid": uid, "note": "", "name": "", "kind": "profile"}
     bot.send_message(msg.chat.id, f"🧩 <b>Chọn loại UID cho</b> <code>{uid}</code>:", reply_markup=type_keyboard(uid))
 
@@ -394,11 +532,9 @@ def step_name(msg):
     data = wizard_state[msg.from_user.id]
     uid = data["uid"]; note = data["note"]; kind = data.get("kind","profile")
     set_item(msg.from_user.id, uid, name=name, note=note, following=True, kind=kind)
-
     bot.send_message(msg.chat.id, f"🤖 Bot đang xử lý UID <code>{uid}</code>. Sẽ báo cho bạn khi hoàn thành!")
     text, kb = build_result_card(msg.from_user.id, uid)
     bot.send_message(msg.chat.id, text, reply_markup=kb, disable_web_page_preview=True)
-
     reset_wizard(msg.from_user.id)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("type:"))
@@ -408,12 +544,8 @@ def choose_type(c):
         bot.answer_callback_query(c.id, "⛔ Bạn chưa được cấp quyền."); return
     st = wizard_state.get(c.from_user.id) or {"uid": uid, "note": "", "name": "", "kind":"profile"}
     st["uid"] = uid
-    if t == "group":
-        st["kind"] = "group"
-        bot.answer_callback_query(c.id, "Đã chọn loại: Group ✅")
-    else:
-        st["kind"] = "profile"
-        bot.answer_callback_query(c.id, "Đã chọn loại: Profile/Page ✅")
+    st["kind"] = "group" if t == "group" else "profile"
+    bot.answer_callback_query(c.id, "Đã chọn loại: " + ("Group ✅" if t=="group" else "Profile/Page ✅"))
     wizard_state[c.from_user.id] = st
     bot.send_message(c.message.chat.id, f"🖊️ <b>Nhập ghi chú cho UID</b> <code>{uid}</code>\nVí dụ: Dame 282, unlock 282")
     bot.register_next_step_handler(c.message, step_note)
@@ -517,7 +649,7 @@ def parse_one_line(ln: str) -> tuple[str,str,str] | None:
         return (ln, "", "")
     return None
 
-# =============== RUN ===============
+# ================== RUN ==================
 if __name__ == "__main__":
-    print("Bot (admin/user + grant/revoke/who) is running…")
+    print("Bot (admin/user + thuê bao + grant/revoke/who) is running…")
     bot.infinity_polling(skip_pending=True, timeout=60)

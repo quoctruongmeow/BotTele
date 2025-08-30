@@ -1,5 +1,7 @@
 python-telegram-bot==20.6
-requests==2.32.3
+requests==2.32.0
 beautifulsoup4==4.12.3
 python-dotenv==1.0.1
 APScheduler==3.10.4
+pyTelegramBotAPI==4.14.0
+
