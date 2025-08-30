@@ -1,12 +1,11 @@
-app = "bottele-s0gg-q"         # Đổi đúng tên app Fly của bạn
+app = "bottele-s0gg-q"   # đổi đúng tên app của bạn trên Fly
 primary_region = "sin"
 
 [build]
-  dockerfile = "Dockerfile"     # BẮT BUỘC để Fly dùng Dockerfile
+  dockerfile = "Dockerfile"
 
 [env]
   PYTHONUNBUFFERED = "1"
 
-# Chạy như 1 worker, không cần HTTP port
 [processes]
   app = "python tele_fb_monitor1.py"
