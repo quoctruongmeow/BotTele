@@ -1,0 +1,6 @@
+echo .git > .dockerignore
+echo __pycache__ >> .dockerignore
+echo *.pyc >> .dockerignore
+echo *.pyo >> .dockerignore
+echo *.db >> .dockerignore
+echo .env >> .dockerignore
