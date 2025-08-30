@@ -1,19 +1,12 @@
-app = "bottele" # đổi thành tên app của bạn trên Fly.io
+app = "bottele-s0gg-q"         # Đổi đúng tên app Fly của bạn
+primary_region = "sin"
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "Dockerfile"     # BẮT BUỘC để Fly dùng Dockerfile
 
 [env]
   PYTHONUNBUFFERED = "1"
 
-[experimental]
-  cmd = ["python", "tele_fb_monitor1.py"]
-
-[[services]]
-  internal_port = 8080
-  processes = ["app"]
-  protocol = "tcp"
-  [[services.ports]]
-    port = 80
-  [[services.ports]]
-    port = 443
+# Chạy như 1 worker, không cần HTTP port
+[processes]
+  app = "python tele_fb_monitor1.py"
