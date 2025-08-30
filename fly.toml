@@ -1,15 +1,11 @@
-# fly.toml — cấu hình chạy bot kiểu worker (không cần HTTP)
-app = "bottele-s0gg-q"   # <--- đổi đúng tên app trên Fly
-primary_region = "sin"   # chọn region gần bạn: sin, hkg, nrt, bom, syd,...
+app = "bottele-s0gg-q"
+primary_region = "sin"
 
 [build]
-  builder = "paketobuildpacks/builder:base"
+  dockerfile = "Dockerfile"
 
 [env]
   PYTHONUNBUFFERED = "1"
 
 [processes]
-  app = "python tele_fb_monitor1.py"
-
-# Không có [[services]] => không có HTTP/port/healthcheck
-# Nếu Fly đã sinh [[services]] trước đó, file này sẽ ghi đè và bỏ hết.
+  worker = "python tele_fb_monitor1.py"
